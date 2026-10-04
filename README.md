@@ -1,5 +1,7 @@
 # Video Collab
 
+A private video platform to help us engage with each other.
+
 Video conferencing + collaboration tool (WebRTC, Socket.io, TypeScript).
 
 ```
