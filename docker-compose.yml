@@ -1,0 +1,70 @@
+# Run the whole thing:   docker compose up -d --build
+# First time:            ./scripts/generate-env.sh meet.example.com   (see DEPLOY.md)
+
+services:
+  # HTTPS, the web app, and the front door to the server.
+  caddy:
+    build: { context: ., target: web }
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp" # HTTP/3
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:?Set SITE_ADDRESS in .env, e.g. meet.example.com}
+      SERVER_UPSTREAM: server:4000
+    volumes:
+      - caddy_data:/data # holds the HTTPS certificates: keep it, or you'll hit Let's Encrypt limits
+      - caddy_config:/config
+    depends_on:
+      server: { condition: service_healthy }
+
+  server:
+    build: { context: ., target: server }
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      CLIENT_ORIGIN: https://${SITE_ADDRESS}
+      TRUST_PROXY: "1" # exactly one proxy (Caddy) sits in front
+      JWT_PRIVATE_KEY: ${JWT_PRIVATE_KEY:?Run ./scripts/generate-env.sh}
+      STUN_URLS: stun:${SITE_ADDRESS}:3478
+      TURN_URLS: turn:${SITE_ADDRESS}:3478?transport=udp,turn:${SITE_ADDRESS}:3478?transport=tcp
+      TURN_SECRET: ${TURN_SECRET:?Run ./scripts/generate-env.sh}
+    volumes:
+      - app_data:/data # accounts and sessions
+
+  # Relays calls for people whose networks block direct connections.
+  # Host networking: it needs a wide range of UDP ports, which Docker's port mapping handles badly.
+  coturn:
+    image: coturn/coturn:4.6
+    restart: unless-stopped
+    network_mode: host
+    command:
+      - --log-file=stdout
+      - --listening-port=3478
+      - --realm=${SITE_ADDRESS}
+      - --fingerprint
+      - --use-auth-secret
+      - --static-auth-secret=${TURN_SECRET}
+      - --external-ip=${TURN_EXTERNAL_IP:?Set TURN_EXTERNAL_IP in .env to this machine's public IP}
+      - --min-port=49160
+      - --max-port=49200
+      - --no-cli
+      - --no-tls
+      - --no-dtls
+      - --no-multicast-peers
+      - --user-quota=12
+      - --total-quota=200
+      # Never relay into private networks: otherwise TURN could be used to reach machines behind your firewall.
+      - --denied-peer-ip=0.0.0.0-0.255.255.255
+      - --denied-peer-ip=10.0.0.0-10.255.255.255
+      - --denied-peer-ip=100.64.0.0-100.127.255.255
+      - --denied-peer-ip=127.0.0.0-127.255.255.255
+      - --denied-peer-ip=169.254.0.0-169.254.255.255
+      - --denied-peer-ip=172.16.0.0-172.31.255.255
+      - --denied-peer-ip=192.168.0.0-192.168.255.255
+
+volumes:
+  caddy_data:
+  caddy_config:
+  app_data:

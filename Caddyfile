@@ -1,0 +1,40 @@
+# Caddy gets and renews the HTTPS certificate by itself (Let's Encrypt), serves the app,
+# and passes API and WebSocket traffic to the Node server. Everything shares one address,
+# so there is no CORS to configure and the login cookie stays "SameSite=Strict".
+#
+# The {$NAME:default} parts are environment variables, so the same file works in Docker
+# and for local testing.
+
+{$SITE_ADDRESS:localhost} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		# This site needs the camera, microphone and screen capture, and nothing else.
+		Permissions-Policy "camera=(self), microphone=(self), display-capture=(self), geolocation=(), payment=()"
+		# Only our own scripts run. style-src-attr allows the inline sizes the layout sets.
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' wss://{hostport}; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+		-Server
+	}
+
+	@backend path /auth/* /files/* /rtc/* /socket.io/* /health
+	handle @backend {
+		reverse_proxy {$SERVER_UPSTREAM:server:4000}
+	}
+
+	handle {
+		root * {$WEB_ROOT:/srv/web}
+
+		# Built files have content-hashed names, so browsers may keep them forever.
+		# Everything else (index.html) must be re-checked, or an update would never show up.
+		@hashed path /assets/*
+		header @hashed Cache-Control "public, max-age=31536000, immutable"
+		header ?Cache-Control "no-cache"
+
+		# Any other address is a page inside the app: let it handle the route.
+		try_files {path} /index.html
+		file_server
+	}
+}
